@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ArchiveCleaner — Document Denoising</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@300;400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --ink: #1a1208;
+    --parchment: #f5edd6;
+    --sepia: #8b6914;
+    --sepia-light: #c4962a;
+    --rust: #9c3a1a;
+    --cream: #fdf6e3;
+    --dust: #e8dfc4;
+    --shadow: rgba(26,18,8,0.18);
+    --card-bg: #fdf8ef;
+    --border: #d4c49a;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--ink);
+    color: var(--parchment);
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 300;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Grain overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.6;
+  }
+
+  /* Vignette */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse at center, transparent 40%, rgba(26,18,8,0.55) 100%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .page { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 0 2rem 4rem; }
+
+  /* ── HEADER ── */
+  header {
+    text-align: center;
+    padding: 3.5rem 0 2.5rem;
+    border-bottom: 1px solid rgba(196,150,42,0.25);
+    margin-bottom: 3rem;
+  }
+
+  .logo-line {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .logo-icon {
+    width: 38px; height: 38px;
+    border: 2px solid var(--sepia-light);
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.1rem;
+  }
+
+  h1 {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--parchment);
+    line-height: 1.1;
+  }
+
+  h1 em {
+    font-style: italic;
+    color: var(--sepia-light);
+  }
+
+  .subtitle {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    font-weight: 300;
+    color: rgba(245,237,214,0.45);
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    margin-top: 0.8rem;
+  }
+
+  /* Model status badge */
+  .status-bar {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1.4rem;
+    padding: 0.4rem 1rem;
+    border-radius: 100px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .status-bar.ready   { background: rgba(196,150,42,0.12); border: 1px solid rgba(196,150,42,0.4); color: var(--sepia-light); }
+  .status-bar.missing { background: rgba(156,58,26,0.12);  border: 1px solid rgba(156,58,26,0.4);  color: #e08060; }
+
+  .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .dot.green { background: #6ab04c; box-shadow: 0 0 6px #6ab04c; }
+  .dot.red   { background: #e05050; box-shadow: 0 0 6px #e05050; }
+
+  /* ── UPLOAD ZONE ── */
+  .upload-zone {
+    border: 2px dashed rgba(196,150,42,0.4);
+    border-radius: 12px;
+    padding: 3.5rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.25s, background 0.25s;
+    background: rgba(245,237,214,0.03);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .upload-zone:hover,
+  .upload-zone.drag-over {
+    border-color: var(--sepia-light);
+    background: rgba(196,150,42,0.06);
+  }
+
+  .upload-icon {
+    font-size: 2.8rem;
+    margin-bottom: 1rem;
+    opacity: 0.7;
+  }
+
+  .upload-zone h2 {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.5rem;
+    margin-bottom: 0.5rem;
+    color: var(--parchment);
+  }
+
+  .upload-zone p {
+    font-size: 0.85rem;
+    color: rgba(245,237,214,0.5);
+    margin-bottom: 1.4rem;
+  }
+
+  .upload-zone input[type="file"] {
+    position: absolute; inset: 0;
+    opacity: 0; cursor: pointer;
+    width: 100%; height: 100%;
+  }
+
+  .btn-upload {
+    display: inline-block;
+    padding: 0.7rem 2rem;
+    border: 1px solid var(--sepia);
+    border-radius: 6px;
+    color: var(--sepia-light);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.8rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .upload-zone:hover .btn-upload {
+    background: var(--sepia);
+    color: var(--ink);
+  }
+
+  /* ── PROCESSING ── */
+  #processing {
+    display: none;
+    text-align: center;
+    padding: 3rem;
+  }
+
+  .spinner {
+    width: 48px; height: 48px;
+    border: 3px solid rgba(196,150,42,0.2);
+    border-top-color: var(--sepia-light);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+    margin: 0 auto 1.2rem;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #processing p {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.8rem;
+    color: rgba(245,237,214,0.5);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  /* ── RESULTS ── */
+  #results { display: none; }
+
+  .results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+
+  .results-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.6rem;
+  }
+
+  .btn-new {
+    padding: 0.5rem 1.2rem;
+    background: transparent;
+    border: 1px solid rgba(196,150,42,0.4);
+    border-radius: 6px;
+    color: var(--sepia-light);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn-new:hover { background: rgba(196,150,42,0.1); }
+
+  /* Metrics row */
+  .metrics-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+
+  .metric-card {
+    background: rgba(245,237,214,0.05);
+    border: 1px solid rgba(196,150,42,0.2);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+  }
+
+  .metric-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: rgba(245,237,214,0.45);
+    margin-bottom: 0.4rem;
+  }
+
+  .metric-value {
+    font-family: 'Playfair Display', serif;
+    font-size: 1.4rem;
+    color: var(--sepia-light);
+  }
+
+  /* Image comparison */
+  .compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  @media (max-width: 640px) { .compare-grid { grid-template-columns: 1fr; } }
+
+  .img-panel {
+    border: 1px solid rgba(196,150,42,0.2);
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(245,237,214,0.03);
+  }
+
+  .img-label {
+    padding: 0.6rem 1rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: rgba(245,237,214,0.45);
+    border-bottom: 1px solid rgba(196,150,42,0.15);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .img-panel img {
+    width: 100%;
+    display: block;
+    image-rendering: auto;
+    filter: sepia(0.08);
+  }
+
+  .btn-download {
+    display: block;
+    width: 100%;
+    padding: 0.75rem;
+    background: rgba(196,150,42,0.1);
+    border: none;
+    border-top: 1px solid rgba(196,150,42,0.2);
+    color: var(--sepia-light);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.2s;
+    text-align: center;
+    text-decoration: none;
+  }
+  .btn-download:hover { background: rgba(196,150,42,0.2); }
+
+  /* ── ERROR ── */
+  #error-msg {
+    display: none;
+    background: rgba(156,58,26,0.12);
+    border: 1px solid rgba(156,58,26,0.4);
+    border-radius: 10px;
+    padding: 1.2rem 1.5rem;
+    color: #e08060;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.8rem;
+    margin-top: 1.5rem;
+  }
+
+  /* ── FOOTER ── */
+  footer {
+    text-align: center;
+    margin-top: 4rem;
+    padding-top: 2rem;
+    border-top: 1px solid rgba(196,150,42,0.15);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.15em;
+    color: rgba(245,237,214,0.25);
+    text-transform: uppercase;
+  }
+
+  /* Transition */
+  .fade-in { animation: fadeIn 0.4s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- HEADER -->
+  <header>
+    <div class="logo-line">
+      <div class="logo-icon">📜</div>
+      <h1>Archive<em>Cleaner</em></h1>
+    </div>
+    <p class="subtitle">Denoising Autoencoder · Historical Document Restoration</p>
+
+    {% if model_ready %}
+    <div class="status-bar ready">
+      <div class="dot green"></div> Model Ready
+    </div>
+    {% else %}
+    <div class="status-bar missing">
+      <div class="dot red"></div> Model not found — place best_model.pth in outputs/
+    </div>
+    {% endif %}
+  </header>
+
+  <!-- UPLOAD -->
+  <section id="upload-section">
+    <div class="upload-zone" id="drop-zone">
+      <input type="file" id="file-input" accept=".png,.jpg,.jpeg,.tif,.tiff,.bmp"/>
+      <div class="upload-icon">🗂️</div>
+      <h2>Upload a Document</h2>
+      <p>Drop a scanned page here, or click to browse<br>Supports PNG · JPG · TIF · BMP</p>
+      <span class="btn-upload">Choose File</span>
+    </div>
+  </section>
+
+  <!-- PROCESSING -->
+  <section id="processing">
+    <div class="spinner"></div>
+    <p>Removing noise from document…</p>
+  </section>
+
+  <!-- ERROR -->
+  <div id="error-msg"></div>
+
+  <!-- RESULTS -->
+  <section id="results">
+    <div class="results-header">
+      <h2 class="results-title">Restoration Complete</h2>
+      <button class="btn-new" onclick="resetUI()">↩ New Document</button>
+    </div>
+
+    <div class="metrics-row">
+      <div class="metric-card">
+        <div class="metric-label">PSNR</div>
+        <div class="metric-value" id="m-psnr">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">SSIM</div>
+        <div class="metric-value" id="m-ssim">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Inference Time</div>
+        <div class="metric-value" id="m-time">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Image Size</div>
+        <div class="metric-value" id="m-size" style="font-size:1rem;padding-top:0.25rem">—</div>
+      </div>
+    </div>
+
+    <div class="compare-grid fade-in">
+      <div class="img-panel">
+        <div class="img-label">⚠ Original (Noisy)</div>
+        <img id="original-img" src="" alt="Original"/>
+      </div>
+      <div class="img-panel">
+        <div class="img-label">✨ Denoised (Restored)</div>
+        <img id="denoised-img" src="" alt="Denoised"/>
+        <a class="btn-download" id="download-btn" href="#" download="denoised.png">
+          ↓ Download Restored Image
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    U-Net Denoising Autoencoder · PyTorch · Kaggle Dirty Documents Dataset
+  </footer>
+</div>
+
+<script>
+const dropZone   = document.getElementById('drop-zone');
+const fileInput  = document.getElementById('file-input');
+const processing = document.getElementById('processing');
+const results    = document.getElementById('results');
+const errorMsg   = document.getElementById('error-msg');
+const uploadSec  = document.getElementById('upload-section');
+
+// Drag & Drop
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) processFile(file);
+});
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) processFile(fileInput.files[0]);
+});
+
+function processFile(file) {
+  // Show original preview
+  const reader = new FileReader();
+  reader.onload = e => {
+    document.getElementById('original-img').src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+
+  // Show loading
+  uploadSec.style.display = 'none';
+  processing.style.display = 'block';
+  results.style.display = 'none';
+  errorMsg.style.display = 'none';
+
+  // Send to backend
+  const formData = new FormData();
+  formData.append('image', file);
+
+  fetch('/denoise', { method: 'POST', body: formData })
+    .then(r => r.json())
+    .then(data => {
+      processing.style.display = 'none';
+      if (data.error) {
+        errorMsg.textContent = '⚠ ' + data.error;
+        errorMsg.style.display = 'block';
+        uploadSec.style.display = 'block';
+        return;
+      }
+      // Populate metrics
+      document.getElementById('m-psnr').textContent = data.psnr;
+      document.getElementById('m-ssim').textContent = data.ssim;
+      document.getElementById('m-time').textContent = data.inference_time;
+      document.getElementById('m-size').textContent = data.processed_size;
+
+      // Show denoised image
+      document.getElementById('denoised-img').src = data.denoised_image;
+      document.getElementById('download-btn').href = data.denoised_image;
+
+      results.style.display = 'block';
+    })
+    .catch(err => {
+      processing.style.display = 'none';
+      errorMsg.textContent = '⚠ Server error: ' + err.message;
+      errorMsg.style.display = 'block';
+      uploadSec.style.display = 'block';
+    });
+}
+
+function resetUI() {
+  results.style.display = 'none';
+  uploadSec.style.display = 'block';
+  fileInput.value = '';
+}
+</script>
+</body>
+</html>
